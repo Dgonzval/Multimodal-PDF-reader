@@ -39,7 +39,6 @@ with st.sidebar:
     - Streamlit
     - LangChain
     - OpenAI
-    - NTT Data
     ''')
 
 def main():
@@ -161,4 +160,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 

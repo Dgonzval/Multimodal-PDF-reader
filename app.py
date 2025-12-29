@@ -68,7 +68,7 @@ def main():
         df_embeddings['embedding'] = df_embeddings['text_context'].apply(generate_embeddings)
 
         embeddings_data = df_embeddings.to_dict(orient='records')
-        with open('Data/embeddings.json', 'w') as f: #Revisar que no se rompa
+        with open('Data/embeddings.json', 'w') as f:
             json.dump(embeddings_data, f)
 
         with open('Data/embeddings.json', 'r') as f:
@@ -160,5 +160,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 

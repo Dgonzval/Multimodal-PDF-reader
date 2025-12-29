@@ -1,0 +1,13 @@
+pymupdf
+python-dotenv==1.0.0
+streamlit
+openai
+litellm
+numpy
+PyPDF2
+faiss-cpu==1.8.0
+streamlit-extras
+langchain
+langchain-community
+chromadb
+scikit-learn

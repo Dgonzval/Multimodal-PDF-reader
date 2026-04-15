@@ -19,7 +19,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-from auxiliary_functions_v3 import build_multimodal_retriever, retrieve_and_answer
+from auxiliary_functions import build_multimodal_retriever, retrieve_and_answer
 
 load_dotenv()
 

@@ -55,7 +55,7 @@ if "pdf_name" not in st.session_state:
 
 
 def main():
-    st.header("🤖 AI Assistant — Multimodal PDF RAG")
+    st.header("🤖 AI Assistant — Multimodal PDF")
 
     pdf = st.file_uploader("Upload your PDF", type="pdf")
 

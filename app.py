@@ -1,165 +1,106 @@
+"""
+app_v3.py
+----------
+Streamlit frontend for the production-grade multimodal PDF RAG pipeline.
+
+Pipeline (per query):
+  1. User uploads PDF.
+  2. On first run → build_multimodal_retriever():
+       • extract text chunks   → embed in Chroma
+       • extract images        → GPT-5 summarizes each image → embed summary in Chroma
+       • store raw content (text bytes / image data-URLs) in InMemoryByteStore
+  3. User types a question.
+  4. retrieve_and_answer() → MultiVectorRetriever fetches relevant raw docs
+     (may be text chunks, raw images, or both) → single GPT-5 multimodal call.
+"""
+
+import os
 import streamlit as st
 from dotenv import load_dotenv
-from auxiliary_functions import extract_images_and_text, find_closest_text_block, generate_embeddings, convert_image_to_base64, analyze_with_gpt, generate_final_response
-import os
-import openai
-import pymupdf  # PyMuPDF
-import base64
-import pandas as pd
-import json
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-from litellm import completion
-import json
-from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.vectorstores import Chroma
-from langchain.llms import OpenAI
-from langchain.chains.question_answering import load_qa_chain
-from langchain.callbacks import get_openai_callback
+from langchain_openai import ChatOpenAI
 
-# Cargar las variables de entorno desde el archivo .env
+from auxiliary_functions_v3 import build_multimodal_retriever, retrieve_and_answer
+
 load_dotenv()
 
-# Obtener las claves de API desde las variables de entorno
-openai_api_key = os.getenv("OPENAI_API_KEY")
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Multimodal PDF Analyzer — V3",
+    page_icon="📄",
+    layout="wide",
+)
 
-# Configurar el cliente de OpenAI con la clave de API
-openai.api_key = openai_api_key
-client = openai.Client(api_key=openai_api_key)
-
-# Sidebar contents
 with st.sidebar:
-    st.title('Unestructured PDF Analyzer')
-    st.markdown('''
-    ## About
-    This app is an LLM-powered chatbot built using:
-    - Streamlit
-    - LangChain
-    - OpenAI
-    ''')
+    st.title("📄 PDF Analyzer V3")
+    st.markdown(
+        """
+        ## Architecture
+        **Multi-Vector Retriever (production pattern)**
+        - GPT-5 summarises every image during ingestion
+        - Text chunks AND image summaries are embedded in Chroma
+        - Retrieval fetches the *original* content linked to top summaries
+        - A single multimodal GPT-5 call synthesises the final answer
+
+        ---
+        > Originals: `app.py`, `auxiliary_functions.py`  
+        > Intermediate: `app_v2.py`, `auxiliary_functions_v2.py`
+        """
+    )
+
+# ── Session state ─────────────────────────────────────────────────────────────
+if "retriever" not in st.session_state:
+    st.session_state.retriever = None
+if "pdf_name" not in st.session_state:
+    st.session_state.pdf_name = None
+
 
 def main():
-    st.header("AI Assistant")
+    st.header("🤖 AI Assistant — Multimodal PDF RAG")
 
-    # Upload a PDF file
-    pdf = st.file_uploader("Upload your PDF", type='pdf')
+    pdf = st.file_uploader("Upload your PDF", type="pdf")
 
     if pdf is not None:
-        pdf_path = pdf.name
-        with open(pdf_path, "wb") as f:
-            f.write(pdf.getbuffer())
+        store_name = pdf.name[:-4]
 
-        text_blocks, image_data = extract_images_and_text(pdf_path)
+        # Only re-index if the PDF changed
+        if st.session_state.pdf_name != pdf.name:
+            pdf_path = f"temp_{pdf.name}"
+            with open(pdf_path, "wb") as f:
+                f.write(pdf.getbuffer())
 
-        # print("Text Blocks:")
-        # for block in text_blocks:
-        #     print(block)
+            with st.spinner(
+                "🔍 Ingesting PDF: extracting text + images, summarising images with GPT-5, building index… (this may take a minute)"
+            ):
+                st.session_state.retriever = build_multimodal_retriever(
+                    pdf_path=pdf_path,
+                    pdf_file_obj=pdf,
+                    store_name=store_name,
+                )
+                st.session_state.pdf_name = pdf.name
 
-        print("\nFiltered Image Data:")
-        for img in image_data:
-            print(img)
+            st.success("✅ PDF ingested! Text chunks and images are indexed.")
 
-        df = pd.DataFrame(image_data)
-        df['text_context'] = df.apply(lambda row: f"Page: {row['page']}\nImage Name: {row['name']}\nText: {row['closest_text']}", axis=1)
-        df_embeddings = df[['text_context', 'image_base64', 'image_ext']]
-        df_embeddings['embedding'] = df_embeddings['text_context'].apply(generate_embeddings)
+        query = st.text_input("Ask a question about your PDF:")
 
-        embeddings_data = df_embeddings.to_dict(orient='records')
-        with open('Data/embeddings.json', 'w') as f:
-            json.dump(embeddings_data, f)
-
-        with open('Data/embeddings.json', 'r') as f:
-            embeddings_data = json.load(f)
-
-        df_embeddings = pd.DataFrame(embeddings_data)
-
-        print('Text and Image Embeddings Done')
-
-        query = st.text_input("Ask questions about your PDF file:")
-
-        if query:
-            # Realizar la consulta en la base de datos vectorial
-            query_embedding = generate_embeddings(query)
-            similarities = cosine_similarity([query_embedding], df_embeddings['embedding'].tolist())
-            closest_index = np.argmax(similarities)
-            closest_match = df_embeddings.iloc[closest_index]
-
-            context = closest_match['text_context']
-            image_base64 = closest_match['image_base64']
-            image_ext = closest_match['image_ext']
-            image_response = analyze_with_gpt(convert_image_to_base64(image_base64, image_ext), context)
-
-            print(f'Query: {query}')
-            print(f'Closest Match: \n{closest_match}')
-
-            final_image_response =  generate_final_response(query, context, image_response)
-
-            # Realizar la consulta en el texto del PDF
-            pdf_reader = PdfReader(pdf)
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text()
-
-            store_name = pdf.name[:-4]
-           
-            ##### NUEVO #####
-
-            persist_directory = f"Data/{store_name}"
-            embedding_model = OpenAIEmbeddings()
-
-            # Cargar si ya existe
-            if os.path.exists(persist_directory):
-                VectorStore = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-                print('VectoreStore loaded')
-            else:
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-                chunks = text_splitter.split_text(text)
-                VectorStore = Chroma.from_texts(chunks, embedding=embedding_model, persist_directory=persist_directory)
-                VectorStore.persist()  # Guarda el vectorstore en disco
-                print(f'New VectorStore created for {store_name} file')
-
-            ##### FIN NUEVO #####
-
-            docs = VectorStore.similarity_search(query=query, k=3)
-            llm = OpenAI()
-            chain = load_qa_chain(llm=llm, chain_type="stuff")
-            with get_openai_callback() as cb:
-                text_response = chain.run(input_documents=docs, question=query)
-                print(cb)
-
-            # Generar la respuesta final
-            final_response = generate_final_response(query, text_response, final_image_response)
-
-            print('Final Response Generated')
-
-            st.write(final_response)
+        if query and st.session_state.retriever:
+            with st.spinner("🧠 Retrieving context and generating answer…"):
+                answer = retrieve_and_answer(query, st.session_state.retriever)
+            st.markdown("### Answer")
+            st.write(answer)
 
     else:
-        prompt = st.text_input("Ask a question:")
+        st.session_state.retriever = None
+        st.session_state.pdf_name = None
 
-        print('No PDF loaded, accesing to Open GPT chat')
-
-        def get_openai_response(question):
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": question}
-                ],
-                max_tokens=100,
-                temperature=0
-            )
-            return response.choices[0].message.content.strip()
+        st.markdown("#### No PDF loaded — General Chat mode")
+        prompt = st.text_input("Ask any question:")
 
         if prompt:
-            response = get_openai_response(prompt)
-            st.write(response)
+            with st.spinner("Thinking…"):
+                llm = ChatOpenAI(model="gpt-5", temperature=0)
+                response = llm.invoke(prompt)
+            st.write(response.content)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
-
-
-

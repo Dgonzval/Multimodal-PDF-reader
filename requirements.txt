@@ -24,6 +24,3 @@ PyPDF2
 # ML utilities
 numpy
 scikit-learn
-
-# Ngrok tunnel (public URL for local Streamlit app)
-pyngrok
